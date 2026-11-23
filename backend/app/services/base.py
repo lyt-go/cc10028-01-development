@@ -16,7 +16,10 @@ from typing import Any
 
 from app.store import store
 
-DATA_ROOT = Path(__file__).resolve().parent.parent.parent.parent / "data"
+DATA_ROOT = Path(
+    os.environ.get("APP_DATA_DIR")
+    or Path(__file__).resolve().parent.parent.parent.parent / "data"
+)
 
 
 def _ensure_dir(path: Path) -> None:
@@ -126,6 +129,16 @@ class BaseModuleService:
                 written += 1
         return written
 
+    def _overwrite_jsonl(self, filepath: Path, records: list[dict[str, Any]]) -> int:
+        """整体重写JSONL文件（先写临时文件再替换），供页组快照与分块结果使用。"""
+        _ensure_dir(filepath.parent)
+        tmp = filepath.with_suffix(filepath.suffix + ".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            for rec in records:
+                f.write(json.dumps(rec, ensure_ascii=False, default=str) + "\n")
+        os.replace(tmp, filepath)
+        return len(records)
+
     def _read_jsonl(self, filepath: Path) -> list[dict[str, Any]]:
         """从JSONL文件读取全部记录，文件不存在返回空列表，脏行自动跳过。"""
         if not filepath.exists():
@@ -140,6 +153,25 @@ class BaseModuleService:
                     except json.JSONDecodeError:
                         continue
         return records
+
+    def _write_json(self, filepath: Path, payload: Any) -> Path:
+        """整体写入JSON文件（覆盖同名文件），用于页段覆盖清单等状态快照。"""
+        _ensure_dir(filepath.parent)
+        tmp = filepath.with_suffix(filepath.suffix + ".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2, default=str)
+        os.replace(tmp, filepath)
+        return filepath
+
+    def _read_json(self, filepath: Path, default: Any = None) -> Any:
+        """读取JSON文件，不存在或内容损坏时返回默认值。"""
+        if not filepath.exists():
+            return default
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            return default
 
     def _write_checkpoint(self, name: str, state: dict[str, Any]) -> Path:
         """写入检查点文件，用于中断恢复与游标推进。检查点记录当前处理偏移和状态。"""

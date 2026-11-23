@@ -60,6 +60,24 @@
             >
               {{ action }}
             </button>
+            <button
+              v-if="meta.key === 'format_parse' && ['草稿', '待解析', '解析中'].includes(String(row.status))"
+              class="link"
+              type="button"
+              :data-testid="`execute-${row.id}`"
+              @click="executeParse(row)"
+            >
+              执行解析
+            </button>
+            <button
+              v-if="meta.key === 'format_parse'"
+              class="link"
+              type="button"
+              :data-testid="`coverage-${row.id}`"
+              @click="openCoverage(row)"
+            >
+              查看页段覆盖
+            </button>
           </td>
         </tr>
         <tr v-if="!rows.length">
@@ -90,6 +108,8 @@
       <span>共 {{ total }} 条{{ meta.name }}记录</span>
       <span v-if="errorMessage" class="error-text">{{ errorMessage }}</span>
     </footer>
+
+    <PageCoveragePanel v-if="meta.key === 'format_parse'" ref="coveragePanel" />
   </section>
 </template>
 
@@ -99,11 +119,13 @@ import { computed, onMounted, ref } from 'vue'
 import {
   createEntry,
   downloadEntries,
+  executeParseTask,
   listEntries,
   moduleMeta,
   runAction as applyAction,
 } from '@/api/backend-service'
 import type { EntryRow } from '@/data/types'
+import PageCoveragePanel from './PageCoveragePanel.vue'
 
 const props = defineProps<{ moduleKey: string }>()
 const meta = moduleMeta(props.moduleKey)
@@ -115,6 +137,7 @@ const filterFields = meta.fields.slice(0, 3)
 const showCreate = ref(false)
 const creating = ref(false)
 const createValues = ref<Record<string, string>>({})
+const coveragePanel = ref<InstanceType<typeof PageCoveragePanel> | null>(null)
 const stats = computed(() => [
   { label: meta.metrics[0], value: total.value },
   { label: meta.metrics[1], value: rows.value.filter((row) => row.status === meta.statuses[1]).length },
@@ -185,6 +208,27 @@ async function reload() {
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '业务列表读取失败'
   }
+}
+
+async function executeParse(row: EntryRow) {
+  errorMessage.value = ''
+  try {
+    const result = await executeParseTask(Number(row.id))
+    if (!result.ok) throw new Error(result.message)
+    await reload()
+    if (row['文档编号']) {
+      await coveragePanel.value?.loadDoc(String(row['文档编号']))
+    }
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '解析执行失败'
+  }
+}
+
+async function openCoverage(row: EntryRow) {
+  const doc = String(row['文档编号'] ?? '')
+  if (!doc) return
+  await coveragePanel.value?.loadDoc(doc)
+  coveragePanel.value?.$el?.scrollIntoView?.({ behavior: 'smooth', block: 'start' })
 }
 
 onMounted(reload)

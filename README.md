@@ -51,7 +51,7 @@ npm run dev
 | 模块 | 目录 | 业务对象 | 主要字段 |
 | --- | --- | --- | --- |
 | 文件接入 | `file_intake` | 接入批次 | 批次编号、来源系统、文件清单 |
-| 格式解析 | `format_parse` | 解析任务 | 任务编号、文档编号、解析器类型 |
+| 格式解析 | `format_parse` | 解析任务 | 任务编号、文档编号、解析器类型、页码范围 |
 | 版式还原 | `layout_restore` | 版式结构 | 文档编号、段落结构、标题层级 |
 | 表格抽取 | `table_extract` | 表格区域 | 表格编号、文档编号、页码位置 |
 | OCR识别 | `ocr_engine` | 识别任务 | 任务编号、图片区域、识别语言 |
@@ -76,6 +76,46 @@ npm run dev
   `frontend/src/domain/<模块>.ts`，用于承载真实业务差异并维持36题位容量。
 - 列表接口统一返回 `{ items, total, page, size }`，动作接口统一返回 `{ ok, message }`。
 - 状态流转只允许在 `app/services` 里改，路由层不做业务判断。
+
+## 页段覆盖清单（格式解析）
+
+同一文档可能有多次解析任务：初次完成第 1-8 页，之后只重跑第 4-6 页并更正第 5 页。
+`format_parse` 通过页段覆盖清单记录“哪一页来自哪个解析任务”，并保证分块只消费
+**一次完整确认的页组**。
+
+产物目录：
+
+| 文件 | 说明 |
+| --- | --- |
+| `data/parsed/<doc>_run_<task_id>.jsonl` | 单个解析任务的不可变页产物 |
+| `data/parsed/<doc>_parsed_index.json` | 每页最新文本索引（供版式还原等旧消费方） |
+| `data/coverage/<doc>_pages.json` | 页段覆盖清单：运行记录、页归属、确认快照 |
+| `data/chunks/<doc>_parsed_chunks.jsonl` | 分块结果，每块带 `page/task_id/content_hash` |
+
+接口：
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| POST | `/api/format_parse/tasks/{task_id}/execute` | 执行解析；请求体 `{ corrected_pages: [5] }` 标记本次更正页 |
+| GET | `/api/format_parse/coverage/{doc_id}` | 覆盖视图：每页的当前分块归属、下次确认归属、待补齐页 |
+| POST | `/api/format_parse/coverage/{doc_id}/confirm` | 确认整份页组用于分块；页组不完整返回 409 与缺口 |
+| GET | `/api/format_parse/coverage/{doc_id}/reopen` | 重新打开最近一次确认，回查未采纳页来源与原因 |
+| POST | `/api/format_parse/documents/{doc_id}/chunks` | 按确认页组手动重算分块 |
+
+行为要点：
+
+- **覆盖视图**：每页给出 `chunk_target`（当前进入哪次确认页组）与
+  `next_chunk_target`（下次确认后归属），并说明还缺哪些页。补页任务只跑第 4-6 页时，
+  第 5 页会显示“第 2 次确认页组（候选，任务 T2-...）”。
+- **确认是原子的**：只有整份页数齐全才写 `confirmed` 快照；不完整时拒绝确认，
+  不覆盖历史确认。分块按页读取该快照指向的 `<doc>_run_<task_id>.jsonl`，
+  每块记录 `task_id/task_key/parsed_file/content_hash`，可回查原解析记录。
+- **并发安全**：同一文档的清单读改写有进程内锁；补页任务解析完成时若尚无新的确认，
+  分块仍用旧确认页组，不会被半份结果替换。
+- **未采纳页可回查**：重新打开确认时，`unadopted_pages` 列出未被采纳的同页产物，
+  含来源任务、内容摘要与待处理原因。
+- 测试使用 `APP_DATA_DIR` 指向临时目录，避免运行产物与重试检查点跨会话污染。
+
 
 领域：数据工程
 子方向：数据采集、爬虫与RPA
